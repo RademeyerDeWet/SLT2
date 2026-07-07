@@ -1,0 +1,10 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Streamlit App",
+			"type": "shell",
+			"command": "d:/Skripsie/Vs/.venv/Scripts/python.exe -m streamlit run app.py"
+		}
+	]
+}
