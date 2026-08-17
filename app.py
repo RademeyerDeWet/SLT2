@@ -692,7 +692,7 @@ if option == "Complex":
     st.header("Combined Loading - Demonstrator Structure")
 
     # Images folder (keep images inside the project so deployments include them)
-    IMAGE_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+    IMAGE_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Assets")
 
     from pathlib import Path
 
@@ -729,7 +729,7 @@ if option == "Complex":
     if img_path:
         st.image(img_path, use_container_width=True, caption=scenario)
     else:
-        st.info(f"No image found for '{scenario}' in assets/ (looking for '{img_basename}.*')")
+        st.info(f"No image found for '{scenario}' in Assets/ (looking for '{img_basename}.*')")
 
     # -----------------------------------------------------------
     # TODO: add your own scenario photo/diagram here, e.g.:
