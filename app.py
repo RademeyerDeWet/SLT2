@@ -4,7 +4,7 @@ import sys
 
 import streamlit as st
 
-IMAGE_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+IMAGE_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Assets")
 
 def ensure_dependencies():
     try:
