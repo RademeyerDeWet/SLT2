@@ -243,7 +243,7 @@ elif option == "Bending":
     
     # Beam parameters
     beam_length = st.number_input("Beam Length (m)", min_value=0.1, value=4.0, step=0.5)
-    resolution = 100
+    resolution = 20000  # points per metre; higher cuts trapezoidal-integration error in slope/deflection
     
     # Support configuration
     st.subheader("Supports")
@@ -285,15 +285,24 @@ elif option == "Bending":
      
     num_moments = st.number_input("Number of External Moments", min_value=0, value=0, step=1, key="num_moments")
     external_moments = []
+    if num_moments > 0:
+        st.caption("↻ Enter a **positive** magnitude for clockwise moments, **negative** for anticlockwise "
+                   "(matches the arrow direction shown in the Beam Visualization below).")
     for i in range(num_moments):
-        pos = st.number_input(f"Moment {i+1} Position (m)", 
-                          min_value=0.0, max_value=beam_length, 
-                          value=beam_length/2, step=0.1, 
+        pos = st.number_input(f"Moment {i+1} Position (m)",
+                          min_value=0.0, max_value=beam_length,
+                          value=beam_length/2, step=0.1,
                           key=f"moment_pos_{i}")
-        mag = st.number_input(f"Moment {i+1} Magnitude (kNm)", 
-                          value=5.0, step=1.0, 
-                       key=f"moment_mag_{i}")
+        mag = st.number_input(f"Moment {i+1} Magnitude (kNm)",
+                          value=5.0, step=1.0,
+                          help="Positive = clockwise, negative = anticlockwise",
+                          key=f"moment_mag_{i}")
         external_moments.append((pos, mag))
+
+    # reaction_calc / bending_moment treat a positive moment as anticlockwise
+    # internally, opposite of the clockwise-positive convention used for the
+    # UI input and the beam-visualization glyph above, so negate here.
+    external_moments_calc = [(pos, -mag) for pos, mag in external_moments]
 
     # Distributed Loads
     st.subheader("Distributed Loads")
@@ -358,22 +367,28 @@ elif option == "Bending":
     if external_moments and len(external_moments) > 0:
      for pos, mag in external_moments:
         radius = 0.4
-        theta1, theta2 = (90, 10) if mag > 0 else (160, 70)
+        # mag > 0 = clockwise per the calculation convention (reaction_calc /
+        # bending_moment_calc). The two arc/arrow glyphs below are mirror
+        # images of each other; tracing their arrowhead tangent shows the
+        # (90,10)-theta glyph reads anticlockwise and the (160,70)-theta
+        # glyph reads clockwise, so they're assigned accordingly here.
+        if mag > 0:  # clockwise
+            theta1, theta2 = (160, 70)
+            arrow_start = (pos - radius/2, 0)
+            arrow_end = (pos - radius/2 + 0.05, 0.1 + radius/2)
+        else:        # anticlockwise
+            theta1, theta2 = (90, 10)
+            arrow_start = (pos + radius/2, 0)
+            arrow_end = (pos + radius/2 - 0.05, 0.1 + radius/2)
+
         arc = patches.Arc((pos, 0), radius, radius, angle=0,
                           theta1=theta1, theta2=theta2,
                           color='purple', linewidth=2)
         ax_beam.add_patch(arc)
 
-        if mag > 0:  # clockwise
-            arrow = FancyArrowPatch((pos+radius/2, 0),
-                                    (pos+radius/2-0.05, 0.1+radius/2),
-                                    arrowstyle='->,head_length=8,head_width=6',
-                                    color='purple', linewidth=2)
-        else:        # anticlockwise
-            arrow = FancyArrowPatch((pos-radius/2, 0),
-                                    (pos-radius/2+0.05, 0.1+radius/2),
-                                    arrowstyle='->,head_length=8,head_width=6',
-                                    color='purple', linewidth=2)
+        arrow = FancyArrowPatch(arrow_start, arrow_end,
+                                arrowstyle='->,head_length=8,head_width=6',
+                                color='purple', linewidth=2)
         ax_beam.add_patch(arrow)
 
     # Distributed loads
@@ -407,6 +422,22 @@ elif option == "Bending":
                               head_width=0.05, head_length=0.05,
                               fc='orange', ec='orange')
 
+    # Distance ruler along the bottom: ticks + labels at every position that
+    # matters (beam ends, supports, loads, moments, distributed load edges).
+    key_positions = sorted(set(
+        [0.0, beam_length]
+        + [p for _, p in supports]
+        + [p for p, _ in point_loads]
+        + [p for p, _ in external_moments]
+        + [s for s, e, _, _ in distributed_loads]
+        + [e for s, e, _, _ in distributed_loads]
+    ))
+    ruler_y = -0.7
+    ax_beam.plot([0, beam_length], [ruler_y, ruler_y], 'k-', linewidth=1)
+    for p in key_positions:
+        ax_beam.plot([p, p], [ruler_y - 0.04, ruler_y + 0.04], 'k-', linewidth=1)
+        ax_beam.text(p, ruler_y - 0.16, f"{p:g} m", ha='center', va='top', fontsize=8)
+
     # Final formatting
     ax_beam.set_xlim(-0.5, beam_length + 0.5)
     ax_beam.set_ylim(-1, 1)
@@ -424,10 +455,23 @@ elif option == "Bending":
     I_mm4 = st.number_input("Second Moment of Area I (mm⁴)", value=8.33e6, step=1e4, format="%.2f")
     E = E_GPa * 1e9      # convert GPa -> Pa
     I = I_mm4 * 1e-12    # convert mm^4 -> m^4
-    
+
+    override_EI = st.checkbox("Override with EI directly (N·m²)", value=False,
+                               help="Bypass E and I above and enter the flexural rigidity EI directly "
+                                    "for the deflection/slope calculation. E and I stay as entered above "
+                                    "and are unaffected elsewhere.")
+    if override_EI:
+        EI_input = st.number_input("Flexural Rigidity EI (N·m²)", value=float(E * I),
+                                    format="%.6e",
+                                    help="Used directly in place of E x I for deflection/slope only.")
+        E_calc, I_calc = 1.0, EI_input
+        st.caption(f"Using manually entered EI = {EI_input:.6e} N·m² for the deflection and slope curves.")
+    else:
+        E_calc, I_calc = E, I
+
     # Calculate reactions
     st.subheader("Results")
-    reactions = calculate_reactions(supports, point_loads, distributed_loads, external_moments, beam_length)
+    reactions = calculate_reactions(supports, point_loads, distributed_loads, external_moments_calc, beam_length)
     if reactions and reactions != False:
         st.markdown("**Support Reactions**")
         is_single_fixed = len(supports) == 1 and supports[0][0] == "Fixed"
@@ -453,12 +497,12 @@ elif option == "Bending":
         # Calculate shear force and bending moment
         shear_reactions = [reactions[0]] if any(s == "Fixed" for s, p in supports) else reactions
         x_sf, shear = shear_force(shear_reactions, point_loads, distributed_loads, beam_length, resolution)
-        x_bm, bending = bending_moment(supports, reactions, [], point_loads, distributed_loads, external_moments, beam_length, resolution)
+        x_bm, bending = bending_moment(supports, reactions, [], point_loads, distributed_loads, external_moments_calc, beam_length, resolution)
 
         
         # Plot diagrams
         fig, axes = plt.subplots(2, 1, figsize=(12, 8))
-        
+
         # Shear Force Diagram
         axes[0].plot(x_sf, shear, 'b-', linewidth=2, label='Shear Force')
         axes[0].axhline(y=0, color='k', linestyle='-', linewidth=0.5)
@@ -467,7 +511,7 @@ elif option == "Bending":
         axes[0].set_title('Shear Force Diagram', fontsize=14, fontweight='bold')
         axes[0].grid(True, alpha=0.3)
         axes[0].legend()
-        
+
         # Bending Moment Diagram
         axes[1].plot(x_bm, bending, 'r-', linewidth=2, label='Bending Moment')
         axes[1].axhline(y=0, color='k', linestyle='-', linewidth=0.5)
@@ -477,29 +521,13 @@ elif option == "Bending":
         axes[1].set_title('Bending Moment Diagram', fontsize=14, fontweight='bold')
         axes[1].grid(True, alpha=0.3)
         axes[1].legend()
-                # Deflection Diagram
-        deflection, slope_curve = beam_deflection(x_bm, bending, E, I, supports)
 
-        fig_def, ax_def = plt.subplots(figsize=(12, 4))
-        ax_def.plot(x_bm, deflection, 'g-', linewidth=2, label='Deflection')
-        ax_def.axhline(y=0, color='k', linestyle='-', linewidth=0.5)
-        ax_def.set_xlabel('Position along beam (m)', fontsize=12)
-        ax_def.set_ylabel('Deflection (m)', fontsize=12)
-        ax_def.set_title('Deflection Curve', fontsize=14, fontweight='bold')
-        ax_def.grid(True, alpha=0.3)
-        ax_def.legend()
-       #   NEW (correct — finds largest absolute deflection):
-        idx_max = np.argmax(np.abs(deflection))
-        max_deflection = deflection[idx_max]
-        max_position = x_bm[idx_max]
-        direction = "downward" if max_deflection < 0 else "upward"
-        st.write(
-            f"Maximum Deflection: {abs(max_deflection):.6e} m "
-            f"({direction}) at x = {max_position:.4f} m"
-        )
-        
-        st.pyplot(fig_def)
+        plt.tight_layout()
+        st.pyplot(fig)
+
         # Slope Diagram
+        deflection, slope_curve = beam_deflection(x_bm, bending, E_calc, I_calc, supports)
+
         fig_slope, ax_slope = plt.subplots(figsize=(12, 4))
         ax_slope.plot(x_bm, slope_curve, 'm-', linewidth=2, label='Slope')
         ax_slope.axhline(y=0, color='k', linestyle='-', linewidth=0.5)
@@ -518,8 +546,26 @@ elif option == "Bending":
             f"Maximum Slope: {abs(max_slope_rad):.6f} rad "
             f"at x = {max_slope_pos:.4f} m"
         )
-        plt.tight_layout()
-        st.pyplot(fig)
+
+        # Deflection Diagram
+        fig_def, ax_def = plt.subplots(figsize=(12, 4))
+        ax_def.plot(x_bm, deflection, 'g-', linewidth=2, label='Deflection')
+        ax_def.axhline(y=0, color='k', linestyle='-', linewidth=0.5)
+        ax_def.set_xlabel('Position along beam (m)', fontsize=12)
+        ax_def.set_ylabel('Deflection (m)', fontsize=12)
+        ax_def.set_title('Deflection Curve', fontsize=14, fontweight='bold')
+        ax_def.grid(True, alpha=0.3)
+        ax_def.legend()
+
+        idx_max = np.argmax(np.abs(deflection))
+        max_deflection = deflection[idx_max]
+        max_position = x_bm[idx_max]
+        direction = "downward" if max_deflection < 0 else "upward"
+        st.pyplot(fig_def)
+        st.write(
+            f"Maximum Deflection: {abs(max_deflection):.6e} m "
+            f"({direction}) at x = {max_position:.4f} m"
+        )
     else:
         st.error("Unable to calculate reactions. Check your support and load configuration.")
      
