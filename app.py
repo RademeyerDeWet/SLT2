@@ -44,6 +44,7 @@ from src.reaction_calc import calculate_reactions
 from src.shear_force_calc import shear_force
 from src.Deflection import beam_deflection
 from src.indeterminate_reaction_calc import solve_propped_cantilever, solve_fixed_fixed
+from src.moment_area import moment_area_curves
 
 
 st.sidebar.title("Options")
@@ -580,17 +581,99 @@ elif option == "Bending":
 # (deflection, and slope where relevant, zero at the released support).
 # See src/indeterminate_reaction_calc.py. EI cancels for a uniform beam,
 # so only geometry and load values are needed.
+#
+# Once the reactions are known the bending moment diagram is presented the way
+# the moment-area method builds it: one curve per load (black), superposed into
+# the resultant (red). See src/moment_area.py.
 # =====================================================================
 
-def _draw_indet_beam(beam_length, supports, point_loads=None, distributed_loads=None, moments=None):
+REACTION_COLOR = "#0072B2"
+
+
+def _draw_moment_arc(ax, pos, mag, color, radius, linewidth=2):
+    """Curved arrow for a couple. `mag` is clockwise-positive (the UI convention)."""
     import matplotlib.patches as patches
     from matplotlib.patches import FancyArrowPatch
 
+    if mag > 0:  # clockwise
+        theta1, theta2 = 160, 70
+        arrow_start = (pos - radius / 2, 0)
+        arrow_end = (pos - radius / 2 + 0.05, 0.1 + radius / 2)
+    else:        # anticlockwise
+        theta1, theta2 = 90, 10
+        arrow_start = (pos + radius / 2, 0)
+        arrow_end = (pos + radius / 2 - 0.05, 0.1 + radius / 2)
+
+    ax.add_patch(patches.Arc((pos, 0), radius, radius, angle=0, theta1=theta1, theta2=theta2,
+                             color=color, linewidth=linewidth))
+    ax.add_patch(FancyArrowPatch(arrow_start, arrow_end, arrowstyle='->,head_length=8,head_width=6',
+                                 color=color, linewidth=linewidth))
+
+
+def _draw_reaction_moment_arc(ax, pos, mag, color, beam_length, radius=0.5, offset=0.4,
+                              linewidth=2.5):
+    """Half-circle reaction-moment indicator, offset just outside the support
+    (away from the beam) so it doesn't collide with the fixed-support hatching.
+    `mag` is clockwise-positive (the UI convention)."""
+    import matplotlib.patches as patches
+    from matplotlib.patches import FancyArrowPatch
+
+    # Same "which way is outside" rule as the hatch direction below: away from
+    # the beam, i.e. left for a support in the left half, right otherwise.
+    side = -1 if pos <= beam_length / 2 else 1
+    cx = pos + side * offset
+    r = radius / 2
+
+    if side > 0:
+        theta_lo, theta_hi = -90, 90   # bulges right, flat edge faces the beam
+    else:
+        theta_lo, theta_hi = 90, 270   # bulges left, flat edge faces the beam
+
+    # Regardless of side, the arrowhead always curls back in toward the beam;
+    # clockwise vs anticlockwise only changes which end (top/bottom) it sits at.
+    tip_theta = theta_lo if mag > 0 else theta_hi
+    y_tip = r * np.sin(np.radians(tip_theta))
+    arrow_len = 0.15
+
+    ax.add_patch(patches.Arc((cx, 0), radius, radius, angle=0, theta1=theta_lo, theta2=theta_hi,
+                             color=color, linewidth=linewidth))
+    ax.add_patch(FancyArrowPatch((cx, y_tip), (cx - side * arrow_len, y_tip),
+                                 arrowstyle='->,head_length=8,head_width=6',
+                                 color=color, linewidth=linewidth))
+    return cx, r
+
+
+def _draw_reaction(ax, entry, beam_length):
+    """Reaction force arrow (below the beam) and reaction moment arc (above it)."""
+    pos, tag, force = entry["pos"], entry["tag"], entry["force"]
+
+    if force >= 0:
+        ax.arrow(pos, -0.85, 0, 0.5, head_width=0.12, head_length=0.12, length_includes_head=True,
+                 fc=REACTION_COLOR, ec=REACTION_COLOR, linewidth=2.5, zorder=6)
+    else:
+        ax.arrow(pos, -0.35, 0, -0.5, head_width=0.12, head_length=0.12, length_includes_head=True,
+                 fc=REACTION_COLOR, ec=REACTION_COLOR, linewidth=2.5, zorder=6)
+    ax.text(pos, -0.95, f"$R_{tag}$ = {force:.2f} kN", ha='center', va='top',
+            fontsize=9, fontweight='bold', color=REACTION_COLOR)
+
+    if "moment" in entry:
+        moment_ui = -entry["moment"]  # solver is anticlockwise-positive, UI is clockwise-positive
+        cx, r = _draw_reaction_moment_arc(ax, pos, moment_ui, REACTION_COLOR, beam_length)
+        # Fixed clearance (not r-relative) so the label sits above the tallest
+        # load annotation (a full-height UDL band tops out at y = 0.6) even
+        # though the arc itself is much shorter.
+        ax.text(cx, 0.78, f"$M_{tag}$ = {moment_ui:.2f} kN·m", ha='center', va='bottom',
+                fontsize=9, fontweight='bold', color=REACTION_COLOR)
+
+
+def _draw_indet_beam(beam_length, supports, point_loads=None, distributed_loads=None,
+                     moments=None, reactions=None):
     point_loads = point_loads or []
     distributed_loads = distributed_loads or []
     moments = moments or []
+    reactions = reactions or []
 
-    fig, ax = plt.subplots(figsize=(10, 3))
+    fig, ax = plt.subplots(figsize=(10, 3.8 if reactions else 3))
     ax.plot([0, beam_length], [0, 0], 'k-', linewidth=4)
 
     for sup_type, sup_pos in supports:
@@ -624,112 +707,195 @@ def _draw_indet_beam(beam_length, supports, point_loads=None, distributed_loads=
             ax.arrow(x, tip, 0, base - tip, head_width=0.05, head_length=0.05, fc='orange', ec='orange')
 
     for pos, mag in moments:
-        radius = 0.4
-        if mag > 0:  # clockwise (UI convention)
-            theta1, theta2 = (160, 70)
-            arrow_start = (pos - radius / 2, 0)
-            arrow_end = (pos - radius / 2 + 0.05, 0.1 + radius / 2)
-        else:  # anticlockwise
-            theta1, theta2 = (90, 10)
-            arrow_start = (pos + radius / 2, 0)
-            arrow_end = (pos + radius / 2 - 0.05, 0.1 + radius / 2)
-        arc = patches.Arc((pos, 0), radius, radius, angle=0, theta1=theta1, theta2=theta2,
-                          color='purple', linewidth=2)
-        ax.add_patch(arc)
-        arrow = FancyArrowPatch(arrow_start, arrow_end, arrowstyle='->,head_length=8,head_width=6',
-                                color='purple', linewidth=2)
-        ax.add_patch(arrow)
+        _draw_moment_arc(ax, pos, mag, 'purple', 0.4)
+
+    for entry in reactions:
+        _draw_reaction(ax, entry, beam_length)
 
     key_positions = sorted(set(
         [0.0, beam_length] + [p for _, p in supports] + [p for p, _ in point_loads]
         + [s for s, e, _, _ in distributed_loads] + [e for s, e, _, _ in distributed_loads]
         + [p for p, _ in moments]
     ))
-    ruler_y = -0.7
+    ruler_y = -1.25 if reactions else -0.7
+    margin = 0.8 if reactions else 0.5
     ax.plot([0, beam_length], [ruler_y, ruler_y], 'k-', linewidth=1)
     for p in key_positions:
         ax.plot([p, p], [ruler_y - 0.04, ruler_y + 0.04], 'k-', linewidth=1)
         ax.text(p, ruler_y - 0.16, f"{p:.3g} m", ha='center', va='top', fontsize=8)
 
-    ax.set_xlim(-0.5, beam_length + 0.5)
-    ax.set_ylim(-1, 1)
+    ax.set_xlim(-margin, beam_length + margin)
+    ax.set_ylim(ruler_y - 0.3, 1.0)
     ax.axis('off')
     return fig
 
 
 def _show_indet_reactions(entries):
-    """entries: list of dicts with keys pos, label, force, and optionally moment."""
+    """entries: list of dicts with keys tag, kind, pos, force, and optionally moment."""
     cols = st.columns(len(entries))
     for col, e in zip(cols, entries):
-        col.metric(f"{e['label']} — Force @ x = {e['pos']:.3g} m", f"{e['force']:.3f} kN",
+        name = f"{e['kind']} support {e['tag']}"
+        col.metric(f"{name} — Force @ x = {e['pos']:.3g} m", f"{e['force']:.3f} kN",
                    "upward ↑" if e['force'] >= 0 else "downward ↓")
         if "moment" in e:
             # Reaction moments come out of solve_propped_cantilever / solve_fixed_fixed
             # in the internal anticlockwise-positive convention; flip to the UI's
             # clockwise-positive convention (used everywhere else, e.g. the M0 input).
             moment_ui = -e['moment']
-            col.metric(f"{e['label']} — Moment @ x = {e['pos']:.3g} m", f"{moment_ui:.3f} kN·m",
+            col.metric(f"{name} — Moment @ x = {e['pos']:.3g} m", f"{moment_ui:.3f} kN·m",
                        "clockwise ↻" if moment_ui >= 0 else "anticlockwise ↺")
+
+
+def _draw_moment_area(beam_length, components, from_left):
+    x, curves, total = moment_area_curves(components, beam_length, from_left)
+
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    dashes = ['-', '--', '-.', ':']
+    for i, (label, M) in enumerate(curves):
+        ax.plot(x, M, color='black', linestyle=dashes[i % len(dashes)],
+                linewidth=1.2, alpha=0.85, label=label)
+    ax.fill_between(x, total, color='red', alpha=0.08)
+    ax.plot(x, total, color='red', linewidth=2.5, label="Resultant M(x)", zorder=5)
+
+    ax.axhline(0, color='black', linewidth=1)
+    ax.set_xlim(0, beam_length)
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("M (kN·m)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, loc='best', framealpha=0.9)
+    return fig
+
+
+def _render_indet_problem(key, beam_length, supports, reactions,
+                          point_loads=(), distributed_loads=(), moments=()):
+    """Beam diagram, button-gated reaction readout, and the moment-area BMD.
+
+    `moments` are applied couples in the UI clockwise-positive convention;
+    each reaction entry carries its moment in the solver's anticlockwise-positive
+    one. Reaction entries need keys tag, kind, pos, force (+ moment if fixed).
+    """
+    state_key = f"show_reactions_{key}"
+    revealed = st.session_state.get(state_key, False)
+
+    st.pyplot(_draw_indet_beam(beam_length, supports, point_loads, distributed_loads, moments,
+                               reactions=reactions if revealed else None))
+
+    if st.button("Hide reactions" if revealed else "Reveal reactions", key=f"reveal_{key}"):
+        st.session_state[state_key] = not revealed
+        st.rerun()
+
+    if revealed:
+        _show_indet_reactions(reactions)
+
+    st.subheader("Bending moment diagram — moment-area method")
+
+    bmd_state_key = f"show_bmd_{key}"
+    bmd_revealed = st.session_state.get(bmd_state_key, False)
+
+    if st.button("Hide diagram" if bmd_revealed else "Reveal diagram", key=f"reveal_bmd_{key}"):
+        st.session_state[bmd_state_key] = not bmd_revealed
+        st.rerun()
+
+    if bmd_revealed:
+        st.caption("Black: the moment diagram each load draws on its own. "
+                   "Red: their superposition, which is the bending moment diagram of the beam.")
+
+        from_left = st.radio("Draw the diagram from", ["Left end", "Right end"], horizontal=True,
+                             key=f"side_{key}",
+                             help="From the left end: x = 0 at the left, increasing to the right, "
+                                  "and at each x only the loads to the left of x are included "
+                                  "(their curve turns on there and stays on for the rest of the "
+                                  "beam). From the right end it's the mirror image: only the loads "
+                                  "to the right of x are included. The one load exactly at the end "
+                                  "you're NOT drawing from is carried straight into that support "
+                                  "and isn't shown as its own curve. The red resultant is the same "
+                                  "either way.") == "Left end"
+
+        components = []
+        for pos, mag in point_loads:
+            components.append({"kind": "force", "pos": pos, "mag": mag,
+                               "label": f"Point load {mag:.3g} kN at x = {pos:.3g} m"})
+        for start, end, w, _ in distributed_loads:
+            components.append({"kind": "udl", "start": start, "end": end, "w": w,
+                               "label": f"UDL {w:.3g} kN/m over {start:.3g}–{end:.3g} m"})
+        for pos, mag in moments:
+            components.append({"kind": "couple", "pos": pos, "mag": -mag,
+                               "label": f"Applied moment {mag:.3g} kN·m at x = {pos:.3g} m"})
+        for r in reactions:
+            components.append({"kind": "force", "pos": r["pos"], "mag": r["force"],
+                               "label": f"Reaction $R_{r['tag']}$ at x = {r['pos']:.3g} m"})
+            if "moment" in r:
+                components.append({"kind": "couple", "pos": r["pos"], "mag": r["moment"],
+                                   "label": f"Reaction moment $M_{r['tag']}$ at x = {r['pos']:.3g} m"})
+
+        st.pyplot(_draw_moment_area(beam_length, components, from_left))
 
 
 if option == "Indeterminate Bending":
     st.header("Statically Indeterminate Bending")
 
     problem = st.selectbox("Problem", [
-        "1: Fixed + Roller (roller 2L/3 from the fixed end, overhang beyond it), UDL over the full beam",
-        "2: Roller + Fixed, moment at the roller + point load at midspan",
-        "3: Fixed + Fixed, UDL over the full beam",
-        "4: Fixed + Roller, UDL over the full beam",
+        "1: Roller + Fixed, moment at the roller + point load at midspan",
+        "2: Roller + Fixed, UDL over the full beam",
+        "3: Roller + Fixed (roller 2L/3 from the fixed end, overhang beyond it), UDL over the full beam",
+        "4: Fixed + Fixed, UDL over the full beam",
         "5: Fixed + Fixed, symmetric point loads a from each end",
         "6: Fixed + Fixed, point load + partial UDL over the last third",
     ])
 
     if problem.startswith("1"):
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             L = st.number_input("Beam Length L (m)", min_value=0.1, value=6.0, step=0.5, key="p1_L")
         with col2:
-            w = st.number_input("Distributed Load w (kN/m)", value=-10.0, step=1.0, key="p1_w",
-                                 help="Negative = downward, Positive = upward")
-
-        fixed_pos = L
-        prop_pos = fixed_pos - 2 * L / 3  # = L/3
-
-        st.pyplot(_draw_indet_beam(L, [("Roller", prop_pos), ("Fixed", fixed_pos)],
-                                    distributed_loads=[(0.0, L, w, w)]))
-
-        result = solve_propped_cantilever(fixed_pos, prop_pos, [], [(0.0, L, w, w)], [], L)
-        _show_indet_reactions([
-            {"label": "Roller support A", "pos": result["prop"]["pos"], "force": result["prop"]["force"]},
-            {"label": "Fixed support B", "pos": result["fixed"]["pos"],
-             "force": result["fixed"]["force"], "moment": result["fixed"]["moment"]},
-        ])
-
-    elif problem.startswith("2"):
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            L = st.number_input("Beam Length L (m)", min_value=0.1, value=6.0, step=0.5, key="p2_L")
-        with col2:
-            M0 = st.number_input("Moment M0 at A (kN·m)", value=-15.0, step=1.0, key="p2_M0",
+            M0 = st.number_input("Moment M0 at A (kN·m)", value=-15.0, step=1.0, key="p1_M0",
                                   help="Positive = clockwise. The diagram shows M0 anticlockwise, "
                                        "so enter a negative value to match it.")
         with col3:
-            P = st.number_input("Point Load P at L/2 (kN)", value=-20.0, step=1.0, key="p2_P",
+            P = st.number_input("Point Load P at L/2 (kN)", value=-20.0, step=1.0, key="p1_P",
                                  help="Negative = downward, Positive = upward")
 
         prop_pos = 0.0
         fixed_pos = L
         M0_internal = -M0  # UI clockwise-positive -> internal anticlockwise-positive
 
-        st.pyplot(_draw_indet_beam(L, [("Roller", prop_pos), ("Fixed", fixed_pos)],
-                                    point_loads=[(L / 2, P)], moments=[(prop_pos, M0)]))
-
         result = solve_propped_cantilever(fixed_pos, prop_pos, [(L / 2, P)], [], [(prop_pos, M0_internal)], L)
-        _show_indet_reactions([
-            {"label": "Roller support A", "pos": result["prop"]["pos"], "force": result["prop"]["force"]},
-            {"label": "Fixed support B", "pos": result["fixed"]["pos"],
-             "force": result["fixed"]["force"], "moment": result["fixed"]["moment"]},
-        ])
+        _render_indet_problem(
+            "p1", L,
+            supports=[("Roller", prop_pos), ("Fixed", fixed_pos)],
+            reactions=[
+                {"tag": "A", "kind": "Roller", "pos": result["prop"]["pos"],
+                 "force": result["prop"]["force"]},
+                {"tag": "B", "kind": "Fixed", "pos": result["fixed"]["pos"],
+                 "force": result["fixed"]["force"], "moment": result["fixed"]["moment"]},
+            ],
+            point_loads=[(L / 2, P)],
+            moments=[(prop_pos, M0)],
+        )
+
+    elif problem.startswith("2"):
+        col1, col2 = st.columns(2)
+        with col1:
+            L = st.number_input("Beam Length L (m)", min_value=0.1, value=6.0, step=0.5, key="p2_L")
+        with col2:
+            w = st.number_input("Distributed Load w (kN/m)", value=-10.0, step=1.0, key="p2_w",
+                                 help="Negative = downward, Positive = upward")
+
+        prop_pos = 0.0
+        fixed_pos = L
+
+        result = solve_propped_cantilever(fixed_pos, prop_pos, [], [(0.0, L, w, w)], [], L)
+        _render_indet_problem(
+            "p2", L,
+            supports=[("Roller", prop_pos), ("Fixed", fixed_pos)],
+            reactions=[
+                {"tag": "A", "kind": "Roller", "pos": result["prop"]["pos"],
+                 "force": result["prop"]["force"]},
+                {"tag": "B", "kind": "Fixed", "pos": result["fixed"]["pos"],
+                 "force": result["fixed"]["force"], "moment": result["fixed"]["moment"]},
+            ],
+            distributed_loads=[(0.0, L, w, w)],
+        )
 
     elif problem.startswith("3"):
         col1, col2 = st.columns(2)
@@ -739,16 +905,21 @@ if option == "Indeterminate Bending":
             w = st.number_input("Distributed Load w (kN/m)", value=-10.0, step=1.0, key="p3_w",
                                  help="Negative = downward, Positive = upward")
 
-        st.pyplot(_draw_indet_beam(L, [("Fixed", 0.0), ("Fixed", L)],
-                                    distributed_loads=[(0.0, L, w, w)]))
+        fixed_pos = L
+        prop_pos = fixed_pos - 2 * L / 3  # = L/3
 
-        result = solve_fixed_fixed(0.0, L, [], [(0.0, L, w, w)], [], L)
-        _show_indet_reactions([
-            {"label": "Fixed support A", "pos": result["A"]["pos"],
-             "force": result["A"]["force"], "moment": result["A"]["moment"]},
-            {"label": "Fixed support B", "pos": result["B"]["pos"],
-             "force": result["B"]["force"], "moment": result["B"]["moment"]},
-        ])
+        result = solve_propped_cantilever(fixed_pos, prop_pos, [], [(0.0, L, w, w)], [], L)
+        _render_indet_problem(
+            "p3", L,
+            supports=[("Roller", prop_pos), ("Fixed", fixed_pos)],
+            reactions=[
+                {"tag": "A", "kind": "Roller", "pos": result["prop"]["pos"],
+                 "force": result["prop"]["force"]},
+                {"tag": "B", "kind": "Fixed", "pos": result["fixed"]["pos"],
+                 "force": result["fixed"]["force"], "moment": result["fixed"]["moment"]},
+            ],
+            distributed_loads=[(0.0, L, w, w)],
+        )
 
     elif problem.startswith("4"):
         col1, col2 = st.columns(2)
@@ -758,15 +929,18 @@ if option == "Indeterminate Bending":
             w = st.number_input("Distributed Load w (kN/m)", value=-10.0, step=1.0, key="p4_w",
                                  help="Negative = downward, Positive = upward")
 
-        st.pyplot(_draw_indet_beam(L, [("Fixed", 0.0), ("Roller", L)],
-                                    distributed_loads=[(0.0, L, w, w)]))
-
-        result = solve_propped_cantilever(0.0, L, [], [(0.0, L, w, w)], [], L)
-        _show_indet_reactions([
-            {"label": "Fixed support A", "pos": result["fixed"]["pos"],
-             "force": result["fixed"]["force"], "moment": result["fixed"]["moment"]},
-            {"label": "Roller support B", "pos": result["prop"]["pos"], "force": result["prop"]["force"]},
-        ])
+        result = solve_fixed_fixed(0.0, L, [], [(0.0, L, w, w)], [], L)
+        _render_indet_problem(
+            "p4", L,
+            supports=[("Fixed", 0.0), ("Fixed", L)],
+            reactions=[
+                {"tag": "A", "kind": "Fixed", "pos": result["A"]["pos"],
+                 "force": result["A"]["force"], "moment": result["A"]["moment"]},
+                {"tag": "B", "kind": "Fixed", "pos": result["B"]["pos"],
+                 "force": result["B"]["force"], "moment": result["B"]["moment"]},
+            ],
+            distributed_loads=[(0.0, L, w, w)],
+        )
 
     elif problem.startswith("5"):
         col1, col2, col3 = st.columns(3)
@@ -779,16 +953,18 @@ if option == "Indeterminate Bending":
             a = st.number_input("Distance a from each fixed end (m)", min_value=0.0, max_value=L / 2,
                                  value=min(L / 3, L / 2), step=0.1, key="p5_a")
 
-        st.pyplot(_draw_indet_beam(L, [("Fixed", 0.0), ("Fixed", L)],
-                                    point_loads=[(a, P), (L - a, P)]))
-
         result = solve_fixed_fixed(0.0, L, [(a, P), (L - a, P)], [], [], L)
-        _show_indet_reactions([
-            {"label": "Fixed support A", "pos": result["A"]["pos"],
-             "force": result["A"]["force"], "moment": result["A"]["moment"]},
-            {"label": "Fixed support B", "pos": result["B"]["pos"],
-             "force": result["B"]["force"], "moment": result["B"]["moment"]},
-        ])
+        _render_indet_problem(
+            "p5", L,
+            supports=[("Fixed", 0.0), ("Fixed", L)],
+            reactions=[
+                {"tag": "A", "kind": "Fixed", "pos": result["A"]["pos"],
+                 "force": result["A"]["force"], "moment": result["A"]["moment"]},
+                {"tag": "B", "kind": "Fixed", "pos": result["B"]["pos"],
+                 "force": result["B"]["force"], "moment": result["B"]["moment"]},
+            ],
+            point_loads=[(a, P), (L - a, P)],
+        )
 
     elif problem.startswith("6"):
         col1, col2, col3 = st.columns(3)
@@ -801,17 +977,19 @@ if option == "Indeterminate Bending":
             w = st.number_input("Distributed Load w over the last L/3 (kN/m)", value=-10.0, step=1.0,
                                  key="p6_w", help="Negative = downward, Positive = upward")
 
-        st.pyplot(_draw_indet_beam(L, [("Fixed", 0.0), ("Fixed", L)],
-                                    point_loads=[(L / 3, P)],
-                                    distributed_loads=[(2 * L / 3, L, w, w)]))
-
         result = solve_fixed_fixed(0.0, L, [(L / 3, P)], [(2 * L / 3, L, w, w)], [], L)
-        _show_indet_reactions([
-            {"label": "Fixed support A", "pos": result["A"]["pos"],
-             "force": result["A"]["force"], "moment": result["A"]["moment"]},
-            {"label": "Fixed support B", "pos": result["B"]["pos"],
-             "force": result["B"]["force"], "moment": result["B"]["moment"]},
-        ])
+        _render_indet_problem(
+            "p6", L,
+            supports=[("Fixed", 0.0), ("Fixed", L)],
+            reactions=[
+                {"tag": "A", "kind": "Fixed", "pos": result["A"]["pos"],
+                 "force": result["A"]["force"], "moment": result["A"]["moment"]},
+                {"tag": "B", "kind": "Fixed", "pos": result["B"]["pos"],
+                 "force": result["B"]["force"], "moment": result["B"]["moment"]},
+            ],
+            point_loads=[(L / 3, P)],
+            distributed_loads=[(2 * L / 3, L, w, w)],
+        )
 
 
 # =====================================================================
