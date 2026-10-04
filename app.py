@@ -156,13 +156,11 @@ elif option == "Torsional":
     T = st.number_input("Applied Torque T (Nm)", value=1000.0, step=100.0)
 
     # Engineering calculations (solid square section)
-    J_eff = 0.1406 * a ** 4      # torsion constant for a square, J_eff = 0.1406 a^4
-    theta = (T * L) / (G * J_eff)  # angle of twist (radians)
-    tau_max = 4.81 * T / a ** 3    # max shear stress, at the midpoint of each side
+    theta = 7.10 * T * L / (a ** 4 * G)  # angle of twist (radians)
+    tau_max = 4.81 * T / a ** 3          # max shear stress, at the midpoint of each side
 
     st.subheader("Results")
-    st.latex(r"\tau_{max} = \frac{4.81\,T}{a^3} \qquad \theta = \frac{T L}{G\,(0.1406\,a^4)}")
-    st.write(f"Torsion Constant J_eff: {J_eff:.3e} m⁴")
+    st.latex(r"\tau_{max} = \frac{4.81\,T}{a^3} \qquad \phi = \frac{7.10\,T L}{a^4 G}")
     st.write(f"Angle of Twist: {np.degrees(theta):.2f}°")
     st.write(f"Max Shear Stress: {tau_max:.2e} Pa")
 
@@ -239,7 +237,7 @@ elif option == "Torsional":
     # --- Graph 1: Angle of twist vs torque ---
     fig1, ax1 = plt.subplots(figsize=(8, 4))
     torques = np.linspace(0, T*1.5, 50)
-    angles = (torques * L) / (G * J_eff)
+    angles = 7.10 * torques * L / (a ** 4 * G)
     ax1.plot(torques, np.degrees(angles), 'g-', linewidth=2, label='Angle of Twist (deg)')
     ax1.set_xlabel('Applied Torque (Nm)', fontsize=12)
     ax1.set_ylabel('Angle of Twist (deg)', fontsize=12)
