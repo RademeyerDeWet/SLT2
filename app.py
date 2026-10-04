@@ -142,25 +142,27 @@ if option == "Axial":
     
 elif option == "Torsional":
     st.header("Torsional Strain Visualization")
+    st.caption("Solid square cross section of side a.")
 
     # Material properties
     st.subheader("Material Properties")
     G = st.number_input("Shear Modulus G (Pa)", value=8e10, step=1e9, format="%.1e")
-    J = st.number_input("Polar Moment of Inertia J (m⁴)", value=1e-6, step=1e-7, format="%.1e")
     yield_shear = st.number_input("Yield Shear Strength (Pa)", value=250e6, step=1e7, format="%.1e")
 
     # Geometry and load
     st.subheader("Geometry and Load")
-    L = st.number_input("Beam Length L (m)", min_value=0.1, value=4.0, step=0.1)
-    w = st.number_input("Beam Width (m)", min_value=0.1, value=1.0, step=0.1)
-    h = st.number_input("Beam Height (m)", min_value=0.1, value=0.5, step=0.1)
+    L = st.number_input("Bar Length L (m)", min_value=0.1, value=2.0, step=0.1)
+    a = st.number_input("Side Length a (m)", min_value=0.001, value=0.05, step=0.005, format="%.3f")
     T = st.number_input("Applied Torque T (Nm)", value=1000.0, step=100.0)
 
-    # Engineering calculations
-    theta = (T * L) / (G * J)  # angle of twist (radians)
-    tau_max = (T * (w/2)) / J  # shear stress at surface (approx for rectangular section)
+    # Engineering calculations (solid square section)
+    J_eff = 0.1406 * a ** 4      # torsion constant for a square, J_eff = 0.1406 a^4
+    theta = (T * L) / (G * J_eff)  # angle of twist (radians)
+    tau_max = 4.81 * T / a ** 3    # max shear stress, at the midpoint of each side
 
     st.subheader("Results")
+    st.latex(r"\tau_{max} = \frac{4.81\,T}{a^3} \qquad \theta = \frac{T L}{G\,(0.1406\,a^4)}")
+    st.write(f"Torsion Constant J_eff: {J_eff:.3e} m⁴")
     st.write(f"Angle of Twist: {np.degrees(theta):.2f}°")
     st.write(f"Max Shear Stress: {tau_max:.2e} Pa")
 
@@ -169,40 +171,31 @@ elif option == "Torsional":
     else:
         st.success("Shear stress is below yield strength. Material remains elastic.")
 
-    # --- Visualization: Twisting bar ---
+    # --- Visualization: Twisting square bar ---
     fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111, projection='3d')
 
     num_sections = 20
     z = np.linspace(0, L, num_sections)
+    square = np.array([[-a/2, -a/2],
+                       [ a/2, -a/2],
+                       [ a/2,  a/2],
+                       [-a/2,  a/2]])
+
+    def section_verts(zi):
+        angle = (zi / L) * theta  # twist angle at section
+        rot = np.array([[np.cos(angle), -np.sin(angle)],
+                        [np.sin(angle),  np.cos(angle)]])
+        xy = square @ rot.T
+        return np.column_stack([xy, np.full(4, zi)])
 
     for i, zi in enumerate(z):
-        angle = (zi / L) * theta  # twist angle at section
-
-        verts = np.array([[-w/2, -h/2, zi],
-                          [w/2, -h/2, zi],
-                          [w/2, h/2, zi],
-                          [-w/2, h/2, zi]])
-
-        rot_matrix = np.array([[np.cos(angle), -np.sin(angle), 0],
-                               [np.sin(angle),  np.cos(angle), 0],
-                               [0,              0,             1]])
-
-        verts_rot = verts @ rot_matrix.T
-        ax.plot(verts_rot[:, 0], verts_rot[:, 1], verts_rot[:, 2], 'b-')
+        verts_rot = section_verts(zi)
+        closed = np.vstack([verts_rot, verts_rot[:1]])
+        ax.plot(closed[:, 0], closed[:, 1], closed[:, 2], 'b-')
 
         if i < len(z) - 1:
-            next_zi = z[i+1]
-            next_angle = (next_zi / L) * theta
-            next_rot_matrix = np.array([[np.cos(next_angle), -np.sin(next_angle), 0],
-                                        [np.sin(next_angle),  np.cos(next_angle), 0],
-                                        [0,                  0,                 1]])
-            next_verts = np.array([[-w/2, -h/2, next_zi],
-                                   [w/2, -h/2, next_zi],
-                                   [w/2, h/2, next_zi],
-                                   [-w/2, h/2, next_zi]])
-            next_verts_rot = next_verts @ next_rot_matrix.T
-
+            next_verts_rot = section_verts(z[i+1])
             for j in range(4):
                 ax.plot([verts_rot[j, 0], next_verts_rot[j, 0]],
                         [verts_rot[j, 1], next_verts_rot[j, 1]],
@@ -211,14 +204,42 @@ elif option == "Torsional":
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
-    ax.set_box_aspect([w, h, L])
-    ax.set_title("Twisting Bar Visualization")
+    ax.set_box_aspect([1, 1, max(1.0, min(L / a, 6.0))])
+    ax.set_title("Twisting Square Bar Visualization")
     st.pyplot(fig)
+
+    # --- Visualization: Cross section with shear stress distribution ---
+    fig_cs, ax_cs = plt.subplots(figsize=(5, 5))
+    ax_cs.add_patch(plt.Rectangle((-a/2, -a/2), a, a, fill=True, facecolor='lightsteelblue',
+                                  edgecolor='blue', linewidth=2))
+    # Shear stress along each edge: max at mid-side, zero at the corners
+    s_edge = np.linspace(-a/2, a/2, 9)
+    scale = 0.25 * a
+    for s in s_edge:
+        mag = scale * (1 - (2 * s / a) ** 2)
+        if mag <= 0:
+            continue
+        kw = dict(head_width=0.04 * a, head_length=0.04 * a, fc='red', ec='red', length_includes_head=True)
+        ax_cs.arrow(a/2, s - mag/2, 0, mag, **kw)     # right edge, upwards
+        ax_cs.arrow(-a/2, s + mag/2, 0, -mag, **kw)   # left edge, downwards
+        ax_cs.arrow(s + mag/2, a/2, -mag, 0, **kw)    # top edge, leftwards
+        ax_cs.arrow(s - mag/2, -a/2, mag, 0, **kw)    # bottom edge, rightwards
+    for x, y in [(a/2, 0), (-a/2, 0), (0, a/2), (0, -a/2)]:
+        ax_cs.plot(x, y, 'ko', markersize=5)
+    ax_cs.annotate(f"τ_max = {tau_max:.2e} Pa\n(mid-side)", xy=(a/2, 0), xytext=(0.65 * a, 0.45 * a),
+                   fontsize=9, arrowprops=dict(arrowstyle='->'))
+    ax_cs.text(0, -0.72 * a, f"a = {a:.3f} m", ha='center', fontsize=10)
+    ax_cs.set_xlim(-0.9 * a, 1.3 * a)
+    ax_cs.set_ylim(-0.85 * a, 0.85 * a)
+    ax_cs.set_aspect('equal')
+    ax_cs.axis('off')
+    ax_cs.set_title("Cross Section Shear Stress (zero at corners)")
+    st.pyplot(fig_cs)
 
     # --- Graph 1: Angle of twist vs torque ---
     fig1, ax1 = plt.subplots(figsize=(8, 4))
     torques = np.linspace(0, T*1.5, 50)
-    angles = (torques * L) / (G * J)
+    angles = (torques * L) / (G * J_eff)
     ax1.plot(torques, np.degrees(angles), 'g-', linewidth=2, label='Angle of Twist (deg)')
     ax1.set_xlabel('Applied Torque (Nm)', fontsize=12)
     ax1.set_ylabel('Angle of Twist (deg)', fontsize=12)
@@ -229,7 +250,7 @@ elif option == "Torsional":
 
     # --- Graph 2: Shear stress vs torque ---
     fig2, ax2 = plt.subplots(figsize=(8, 4))
-    stresses = (torques * (w/2)) / J
+    stresses = 4.81 * torques / a ** 3
     ax2.plot(torques, stresses, 'r-', linewidth=2, label='Max Shear Stress (Pa)')
     ax2.axhline(y=yield_shear, color='k', linestyle='--', label='Yield Shear Strength')
     ax2.set_xlabel('Applied Torque (Nm)', fontsize=12)
@@ -657,12 +678,15 @@ def _draw_reaction(ax, entry, beam_length):
             fontsize=9, fontweight='bold', color=REACTION_COLOR)
 
     if "moment" in entry:
-        moment_ui = -entry["moment"]  # solver is anticlockwise-positive, UI is clockwise-positive
-        cx, r = _draw_reaction_moment_arc(ax, pos, moment_ui, REACTION_COLOR, beam_length)
+        # The arc geometry conveys direction, so the label shows magnitude only -
+        # a signed number would flip sign between the two ends of a symmetric case
+        # even though both arrows correctly point their own "inward" resisting way.
+        moment_arc = -entry["moment"]  # solver is anticlockwise-positive, arc geometry is clockwise-positive
+        cx, r = _draw_reaction_moment_arc(ax, pos, moment_arc, REACTION_COLOR, beam_length)
         # Fixed clearance (not r-relative) so the label sits above the tallest
         # load annotation (a full-height UDL band tops out at y = 0.6) even
         # though the arc itself is much shorter.
-        ax.text(cx, 0.78, f"$M_{tag}$ = {moment_ui:.2f} kN·m", ha='center', va='bottom',
+        ax.text(cx, 0.78, f"$M_{tag}$ = {abs(entry['moment']):.2f} kN·m", ha='center', va='bottom',
                 fontsize=9, fontweight='bold', color=REACTION_COLOR)
 
 
@@ -739,11 +763,11 @@ def _show_indet_reactions(entries):
                    "upward ↑" if e['force'] >= 0 else "downward ↓")
         if "moment" in e:
             # Reaction moments come out of solve_propped_cantilever / solve_fixed_fixed
-            # in the internal anticlockwise-positive convention; flip to the UI's
-            # clockwise-positive convention (used everywhere else, e.g. the M0 input).
-            moment_ui = -e['moment']
-            col.metric(f"{name} — Moment @ x = {e['pos']:.3g} m", f"{moment_ui:.3f} kN·m",
-                       "clockwise ↻" if moment_ui >= 0 else "anticlockwise ↺")
+            # in the anticlockwise-positive convention; shown here as a magnitude,
+            # with direction stated in words instead of via a sign.
+            moment_ui = e['moment']
+            col.metric(f"{name} — Moment @ x = {e['pos']:.3g} m", f"{abs(moment_ui):.3f} kN·m",
+                       "anticlockwise ↺" if moment_ui >= 0 else "clockwise ↻")
 
 
 def _draw_moment_area(beam_length, components, from_left):
@@ -848,16 +872,15 @@ if option == "Indeterminate Bending":
         with col1:
             L = st.number_input("Beam Length L (m)", min_value=0.1, value=6.0, step=0.5, key="p1_L")
         with col2:
-            M0 = st.number_input("Moment M0 at A (kN·m)", value=-15.0, step=1.0, key="p1_M0",
-                                  help="Positive = clockwise. The diagram shows M0 anticlockwise, "
-                                       "so enter a negative value to match it.")
+            M0 = st.number_input("Moment M0 at A (kN·m)", value=15.0, step=1.0, key="p1_M0",
+                                  help="Positive = anticlockwise, negative = clockwise.")
         with col3:
             P = st.number_input("Point Load P at L/2 (kN)", value=-20.0, step=1.0, key="p1_P",
                                  help="Negative = downward, Positive = upward")
 
         prop_pos = 0.0
         fixed_pos = L
-        M0_internal = -M0  # UI clockwise-positive -> internal anticlockwise-positive
+        M0_internal = M0  # UI anticlockwise-positive matches the internal convention directly
 
         result = solve_propped_cantilever(fixed_pos, prop_pos, [(L / 2, P)], [], [(prop_pos, M0_internal)], L)
         _render_indet_problem(
@@ -870,7 +893,7 @@ if option == "Indeterminate Bending":
                  "force": result["fixed"]["force"], "moment": result["fixed"]["moment"]},
             ],
             point_loads=[(L / 2, P)],
-            moments=[(prop_pos, M0)],
+            moments=[(prop_pos, -M0)],  # convert to _render_indet_problem's clockwise-positive convention
         )
 
     elif problem.startswith("2"):
