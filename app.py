@@ -52,7 +52,7 @@ option = st.sidebar.radio("Select", ["Axial", "Torsional", "Bending", "Indetermi
 
 if option == "Axial":
 
-    st.header("Axial Deflection Visualization")
+    st.header("Axial Deflection Visualisation")
 
     # Material properties
     st.subheader("Material Properties")
@@ -84,11 +84,11 @@ if option == "Axial":
     else:
         st.success("Stress is below yield strength. Material remains elastic.")
 
-       # --- Visualization 1: Rectangle deformation with arrows ---
+       # --- Visualisation 1: Rectangle deformation with arrows ---
     fig1, ax1 = plt.subplots(figsize=(8, 3))
 
     # Original dimensions
-    L0 = 4.0   # base drawn length for visualization
+    L0 = 4.0   # base drawn length for visualisation
     w0, h0 = 1.0, 0.5
 
     # Apply axial strain (length change) and lateral strain (width/height change)
@@ -109,10 +109,10 @@ if option == "Axial":
     ax1.set_ylim(-1, 1)
     ax1.set_aspect('equal')
     ax1.axis('off')
-    ax1.set_title("Axial Load Visualization")
+    ax1.set_title("Axial Load Visualisation")
     st.pyplot(fig1)
 
-    # --- Visualization 2: Deflection curve along the bar ---
+    # --- Visualisation 2: Deflection curve along the bar ---
     fig2, ax2 = plt.subplots(figsize=(8, 4))
     x_coords = np.linspace(0, L, 100)
     deflection_curve = (delta_L / L) * x_coords  # linear elongation along the bar
@@ -141,7 +141,7 @@ if option == "Axial":
             st.error("Incorrect. The correct answer is B: The rectangle will expand horizontally.")
     
 elif option == "Torsional":
-    st.header("Torsional Strain Visualization")
+    st.header("Torsional Strain Visualisation")
     st.caption("Solid square cross section of side a.")
 
     # Material properties
@@ -169,7 +169,7 @@ elif option == "Torsional":
     else:
         st.success("Shear stress is below yield strength. Material remains elastic.")
 
-    # --- Visualization: Twisting square bar ---
+    # --- Visualisation: Twisting square bar ---
     fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111, projection='3d')
 
@@ -203,10 +203,10 @@ elif option == "Torsional":
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
     ax.set_box_aspect([1, 1, max(1.0, min(L / a, 6.0))])
-    ax.set_title("Twisting Square Bar Visualization")
+    ax.set_title("Twisting Square Bar Visualisation")
     st.pyplot(fig)
 
-    # --- Visualization: Cross section with shear stress distribution ---
+    # --- Visualisation: Cross section with shear stress distribution ---
     fig_cs, ax_cs = plt.subplots(figsize=(5, 5))
     ax_cs.add_patch(plt.Rectangle((-a/2, -a/2), a, a, fill=True, facecolor='lightsteelblue',
                                   edgecolor='blue', linewidth=2))
@@ -308,7 +308,7 @@ elif option == "Bending":
     external_moments = []
     if num_moments > 0:
         st.caption("↻ Enter a **positive** magnitude for clockwise moments, **negative** for anticlockwise "
-                   "(matches the arrow direction shown in the Beam Visualization below).")
+                   "(matches the arrow direction shown in the Beam Visualisation below).")
     for i in range(num_moments):
         pos = st.number_input(f"Moment {i+1} Position (m)",
                           min_value=0.0, max_value=beam_length,
@@ -322,7 +322,7 @@ elif option == "Bending":
 
     # reaction_calc / bending_moment treat a positive moment as anticlockwise
     # internally, opposite of the clockwise-positive convention used for the
-    # UI input and the beam-visualization glyph above, so negate here.
+    # UI input and the beam-visualisation glyph above, so negate here.
     external_moments_calc = [(pos, -mag) for pos, mag in external_moments]
 
     # Distributed Loads
@@ -345,8 +345,8 @@ elif option == "Bending":
 
 
 
-    # Beam Visualization
-    st.subheader("Beam Visualization")
+    # Beam Visualisation
+    st.subheader("Beam Visualisation")
     fig_beam, ax_beam = plt.subplots(figsize=(12, 4))
 
     # Draw beam as horizontal line
@@ -586,6 +586,14 @@ elif option == "Bending":
         st.write(
             f"Maximum Deflection: {abs(max_deflection):.6e} m "
             f"({direction}) at x = {max_position:.4f} m"
+        )
+
+        x_mid = beam_length / 2
+        mid_deflection = np.interp(x_mid, x_bm, deflection)
+        mid_direction = "downward" if mid_deflection < 0 else "upward"
+        st.write(
+            f"Midpoint Deflection: {abs(mid_deflection):.6e} m "
+            f"({mid_direction}) at x = {x_mid:.4f} m"
         )
     else:
         st.error("Unable to calculate reactions. Check your support and load configuration.")
